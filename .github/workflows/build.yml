@@ -64,7 +64,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.filter-targets.outputs.build == 'true'
-        uses: actions/checkout@v3
+        uses: actions/checkout@v2
         with:
           path: st7789_mpy
 
@@ -109,10 +109,10 @@ jobs:
         if: steps.filter-targets.outputs.build == 'true'
         run: |
           cd micropython/ports/esp32
-          
+
           # Set up build environment
           . $IDF_PATH/export.sh
-          
+
           # Build with the target board
           make BOARD=${{ matrix.target }} USER_C_MODULES=../../../../st7789_mpy/st7789/micropython.cmake FROZEN_MANIFEST="" FROZEN_MPY_DIR=modules
 
@@ -125,37 +125,37 @@ jobs:
         if: steps.filter-targets.outputs.build == 'true'
         run: |
           cp micropython/ports/esp32/build-${{ matrix.target }}/firmware.bin output/${{ matrix.target }}/
-          
+
           # Create flash instructions
           cat > output/${{ matrix.target }}/flash_instructions.md << EOF
           # Flashing firmware for ${{ matrix.target }}
-          
+
           ## ESP32 ${{ steps.determine-target.outputs.esp_target }}
-          
+
           ### Erase flash
-          
+
           ```
           esptool.py --chip ${{ steps.determine-target.outputs.esp_target }} --port /dev/ttyUSB0 erase_flash
           ```
-          
+
           ### Flash firmware
-          
+
           ```
           esptool.py --chip ${{ steps.determine-target.outputs.esp_target }} --port /dev/ttyUSB0 write_flash -z 0x1000 firmware.bin
           ```
-          
+
           Note: For ESP32-S3 devices, use address 0x0 instead of 0x1000:
-          
+
           ```
           esptool.py --chip esp32s3 --port /dev/ttyUSB0 write_flash -z 0 firmware.bin
           ```
-          
+
           Power cycle the device after flashing.
           EOF
 
       - name: Upload firmware artifacts
         if: steps.filter-targets.outputs.build == 'true'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v2
         with:
           name: firmware-${{ matrix.target }}
           path: output/${{ matrix.target }}
@@ -191,7 +191,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.filter-targets.outputs.build == 'true'
-        uses: actions/checkout@v3
+        uses: actions/checkout@v2
         with:
           path: st7789_mpy
 
@@ -238,13 +238,13 @@ jobs:
         if: steps.filter-targets.outputs.build == 'true'
         run: |
           cp micropython/ports/rp2/build-${{ matrix.target }}/firmware.uf2 output/${{ matrix.target }}/
-          
+
           # Create flash instructions
           cat > output/${{ matrix.target }}/flash_instructions.md << EOF
           # Flashing firmware for ${{ matrix.target }}
-          
+
           ## Raspberry Pi RP2040
-          
+
           1. Press and hold the BOOTSEL button on the board
           2. Connect the board to your computer via USB
           3. Release the BOOTSEL button
@@ -255,7 +255,7 @@ jobs:
 
       - name: Upload firmware artifacts
         if: steps.filter-targets.outputs.build == 'true'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v2
         with:
           name: firmware-${{ matrix.target }}
           path: output/${{ matrix.target }}
