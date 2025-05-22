@@ -1,0 +1,137 @@
+name: Build MicroPython ESP32 Firmware with User C Module
+
+on:
+  push:
+    branches: [ main, master ] # Adjust as needed
+  pull_request:
+    branches: [ main, master ] # Adjust as needed
+  workflow_dispatch: # Allows manual triggering
+
+env:
+  # --- USER CONFIGURABLE ---
+  # Relative path from the root of your repository to your User C Module directory
+  # This directory should contain your module's .c files and micropython.mk
+  USER_C_MODULE_PATH: "src/my_c_module" # Example: "my_module" or "modules/my_feature"
+
+  # Optional: Specify a MicroPython version (tag or branch) to checkout
+  # If empty, it will use the latest from micropython/micropython master
+  MPY_VERSION: "v1.22.2" # Example: "v1.20.0", "master"
+
+  # ESP-IDF Docker image version
+  ESP_IDF_VERSION: "v5.1" # Or "v4.4", "latest", etc.
+  # --- END USER CONFIGURABLE ---
+
+jobs:
+  build_firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # Continue building other targets even if one fails
+      matrix:
+        # Define your target ESP32 boards here
+        # These should correspond to the BOARD names in micropython/ports/esp32/boards
+        target:
+          - ESP32_GENERIC
+          - ESP32_S2_GENERIC
+          - ESP32_S3_GENERIC
+          - ESP32_C3_GENERIC
+        # You can add more specific boards like:
+        # - LOLIN_S2_MINI
+        # - UM_FEATHERS2
+        # - ESP32_CAM
+        # - ESP32_GENERIC_C3_USB   (for C3 with native USB)
+        # - ESP32_GENERIC_S3_SPIRAM_OCT (for S3 with Octal SPIRAM)
+
+    container:
+      image: espressif/esp-idf:${{ env.ESP_IDF_VERSION }}
+
+    steps:
+      - name: Checkout Your Repository (with User C Module)
+        uses: actions/checkout@v4
+        with:
+          path: main_project # Checkout your project to a specific subdirectory
+
+      - name: Clone MicroPython
+        uses: actions/checkout@v4
+        with:
+          repository: micropython/micropython
+          path: micropython # Clone MicroPython to its own subdirectory
+          ref: ${{ env.MPY_VERSION }} # Use specified version or latest if env.MPY_VERSION is empty
+          submodules: 'recursive' # Fetch submodules like libffi if needed by MicroPython
+
+      - name: Set up ESP-IDF environment (if needed by container entrypoint)
+        # The espressif/esp-idf container often sources export.sh automatically.
+        # This step is a safeguard or for custom entrypoints.
+        run: |
+          echo "Sourcing ESP-IDF environment..."
+          . $IDF_PATH/export.sh
+          echo "IDF_PATH=$IDF_PATH" >> $GITHUB_ENV
+          echo "IDF_TOOLS_PATH=$IDF_TOOLS_PATH" >> $GITHUB_ENV
+        # If you encounter issues, you might need to install tools first:
+        # run: |
+        #   $IDF_PATH/install.sh esp32,esp32s2,esp32s3,esp32c3 # Or list specific chips
+        #   . $IDF_PATH/export.sh
+        #   echo "IDF_PATH=$IDF_PATH" >> $GITHUB_ENV
+        #   echo "IDF_TOOLS_PATH=$IDF_TOOLS_PATH" >> $GITHUB_ENV
+
+
+      - name: Build mpy-cross
+        working-directory: micropython/mpy-cross
+        run: |
+          echo "Building mpy-cross..."
+          make -j$(nproc)
+
+      - name: Build Firmware for ${{ matrix.target }}
+        working-directory: micropython/ports/esp32
+        env:
+          # Path to User C Modules, relative from micropython/ports/esp32
+          # GITHUB_WORKSPACE is the root of the checkout area
+          # So, ../../main_project points to your project root
+          USER_C_MODULES_DIR: "../../../main_project/${{ env.USER_C_MODULE_PATH }}"
+        run: |
+          echo "Building firmware for ${{ matrix.target }}"
+          echo "User C Module directory: ${USER_C_MODULES_DIR}"
+
+          # Check if the user C module directory exists
+          if [ ! -d "${USER_C_MODULES_DIR}" ]; then
+            echo "Error: User C module directory '${USER_C_MODULES_DIR}' not found."
+            echo "Please check the USER_C_MODULE_PATH environment variable in your workflow."
+            ls -R ../../../main_project # List contents of main_project for debugging
+            exit 1
+          fi
+
+          # Clean previous build (important if switching boards or configurations)
+          make BOARD=${{ matrix.target }} USER_C_MODULES="${USER_C_MODULES_DIR}" FROZEN_MANIFEST="" clean
+
+          # Build submodules (like tinyusb)
+          make BOARD=${{ matrix.target }} USER_C_MODULES="${USER_C_MODULES_DIR}" FROZEN_MANIFEST="" -j$(nproc) submodules
+
+          # Build the firmware
+          make BOARD=${{ matrix.target }} USER_C_MODULES="${USER_C_MODULES_DIR}" FROZEN_MANIFEST="" -j$(nproc)
+
+      - name: Prepare Artifacts for ${{ matrix.target }}
+        id: prep_artifacts
+        run: |
+          FIRMWARE_DIR="micropython/ports/esp32/build-${{ matrix.target }}"
+          ARTIFACT_NAME="firmware-${{ matrix.target }}"
+          echo "Firmware directory: ${FIRMWARE_DIR}"
+          ls -lh "${FIRMWARE_DIR}"
+          ls -lh "${FIRMWARE_DIR}/bootloader" # bootloader.bin is in a subfolder
+
+          # Create a temporary directory for artifacts to ensure clean structure
+          mkdir -p "artifact_temp/${ARTIFACT_NAME}"
+          cp "${FIRMWARE_DIR}/firmware.bin" "artifact_temp/${ARTIFACT_NAME}/"
+          cp "${FIRMWARE_DIR}/partitions.bin" "artifact_temp/${ARTIFACT_NAME}/"
+          cp "${FIRMWARE_DIR}/bootloader/bootloader.bin" "artifact_temp/${ARTIFACT_NAME}/"
+          # Optional: include .map and .elf files for debugging
+          if [ -f "${FIRMWARE_DIR}/micropython.map" ]; then cp "${FIRMWARE_DIR}/micropython.map" "artifact_temp/${ARTIFACT_NAME}/"; fi
+          if [ -f "${FIRMWARE_DIR}/micropython.elf" ]; then cp "${FIRMWARE_DIR}/micropython.elf" "artifact_temp/${ARTIFACT_NAME}/"; fi
+
+          echo "::set-output name=artifact_path::artifact_temp/${ARTIFACT_NAME}"
+          echo "::set-output name=artifact_name::${ARTIFACT_NAME}"
+
+      - name: Upload Firmware Artifact for ${{ matrix.target }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ steps.prep_artifacts.outputs.artifact_name }}
+          path: ${{ steps.prep_artifacts.outputs.artifact_path }}
+          if-no-files-found: error # Fail the workflow if firmware files are not found
