@@ -1,262 +1,64 @@
-name: Build MicroPython ST7789 Module
+name: Build MicroPython Firmware
 
 on:
   push:
-    branches: [ main, master ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'examples/**'
+    branches: [ "main" ]
   pull_request:
-    branches: [ main, master ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'examples/**'
-  workflow_dispatch:
-    inputs:
-      targets:
-        description: 'Comma-separated list of targets to build (leave empty for all)'
-        required: false
-        default: ''
+    branches: [ "main" ]
 
 jobs:
-  build-esp32-targets:
+  build:
     runs-on: ubuntu-latest
-    container:
-      image: espressif/idf:v4.4
+    container: espressif/esp-idf:latest
     strategy:
-      fail-fast: false
       matrix:
-        target: [
-          "GENERIC-7789",
-          "GENERIC_SPIRAM-7789",
-          "GENERIC_C3",
-          "GENERIC_C3_USB",
-          "GENERIC_S2",
-          "GENERIC_S3_7789",
-          "GENERIC_S3_SPIRAM",
-          "GENERIC_S3_SPIRAM_OCT",
-          "LOLIN_S2_MINI",
-          "ESP32_BOX_LITE",
-          "T-DISPLAY-ESP32",
-          "T-DONGLE-S3",
-          "M5CORE",
-          "M5CORE2",
-          "TWATCH-2020"
-        ]
+        target:
+          - ESP32_BOX_LITE
+          - GENERIC-7789
+          - GENERIC_C3
+          - GENERIC_C3_USB
+          - GENERIC_S2
+          - GENERIC_S3_7789
+          - GENERIC_S3_SPIRAM
+          - GENERIC_S3_SPIRAM_OCT
+          - GENERIC_SPIRAM-7789
+          - LOLIN_S2_MINI
+          - M5CORE
+          - M5CORE2
+          - PYBV11
+          - RP2
+          - RP2W
+          - T-DISPLAY-ESP32
+          - T-DISPLAY-RP2040
+          - T-DONGLE-S3
+          - TWATCH-2020
+          - WIO_TERMINAL
 
     steps:
-      - name: Filter targets if specified
-        id: filter-targets
-        run: |
-          if [ -n "${{ github.event.inputs.targets }}" ]; then
-            IFS=',' read -ra SPECIFIED_TARGETS <<< "${{ github.event.inputs.targets }}"
-            for TARGET in "${SPECIFIED_TARGETS[@]}"; do
-              if [[ "${{ matrix.target }}" == "$TARGET" ]]; then
-                echo "build=true" >> $GITHUB_OUTPUT
-                break
-              fi
-            done
-          else
-            echo "build=true" >> $GITHUB_OUTPUT
-          fi
+    - uses: actions/checkout@v3
+      with:
+        submodules: recursive
 
-      - name: Checkout repository
-        if: steps.filter-targets.outputs.build == 'true'
-        uses: actions/checkout@v2
-        with:
-          path: st7789_mpy
+    - name: Set up ESP-IDF
+      run: |
+        . $IDF_PATH/export.sh
+        cd /opt/esp/idf
+        git checkout release/v4.4 # Or your desired ESP-IDF version
+        git pull
+        git submodule update --init --recursive
+        ./install.sh
 
-      - name: Clone MicroPython repository
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          git clone --depth 1 https://github.com/micropython/micropython.git
-          cd micropython
-          git submodule update --init --recursive
+    - name: Build MicroPython
+      run: |
+        . $IDF_PATH/export.sh
+        cd micropython
+        make -C mpy-cross V=1
+        cd ports/esp32
+        make BOARD_DIR=../../../../firmware/${{ matrix.target }} USER_C_MODULES=../../../../st7789 CFLAGS_EXTRA="-DMODULE_ST7789_ENABLED=1" submodules
+        make BOARD_DIR=../../../../firmware/${{ matrix.target }} USER_C_MODULES=../../../../st7789 CFLAGS_EXTRA="-DMODULE_ST7789_ENABLED=1" -j$(nproc)
 
-      - name: Build mpy-cross
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          cd micropython
-          make -C mpy-cross
-
-      - name: Prepare frozen modules
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          cd micropython/ports/esp32
-          mkdir -p modules
-          cp -r ../../../st7789_mpy/fonts/bitmap/vga1_*.py modules/
-          cp -r ../../../st7789_mpy/fonts/vector/*.py modules/
-          cp -r ../../../st7789_mpy/fonts/truetype/NotoSans_32.py modules/
-
-      - name: Determine ESP-IDF target
-        if: steps.filter-targets.outputs.build == 'true'
-        id: determine-target
-        run: |
-          TARGET="${{ matrix.target }}"
-          if [[ "$TARGET" == *"C3"* ]]; then
-            echo "esp_target=esp32c3" >> $GITHUB_OUTPUT
-          elif [[ "$TARGET" == *"S2"* ]]; then
-            echo "esp_target=esp32s2" >> $GITHUB_OUTPUT
-          elif [[ "$TARGET" == *"S3"* ]]; then
-            echo "esp_target=esp32s3" >> $GITHUB_OUTPUT
-          else
-            echo "esp_target=esp32" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build firmware for ${{ matrix.target }}
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          cd micropython/ports/esp32
-
-          # Set up build environment
-          . $IDF_PATH/export.sh
-
-          # Build with the target board
-          make BOARD=${{ matrix.target }} USER_C_MODULES=../../../../st7789_mpy/st7789/micropython.cmake FROZEN_MANIFEST="" FROZEN_MPY_DIR=modules
-
-      - name: Create output directory
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          mkdir -p output/${{ matrix.target }}
-
-      - name: Copy firmware files
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          cp micropython/ports/esp32/build-${{ matrix.target }}/firmware.bin output/${{ matrix.target }}/
-
-          # Create flash instructions
-          cat > output/${{ matrix.target }}/flash_instructions.md << EOF
-          # Flashing firmware for ${{ matrix.target }}
-
-          ## ESP32 ${{ steps.determine-target.outputs.esp_target }}
-
-          ### Erase flash
-
-          ```
-          esptool.py --chip ${{ steps.determine-target.outputs.esp_target }} --port /dev/ttyUSB0 erase_flash
-          ```
-
-          ### Flash firmware
-
-          ```
-          esptool.py --chip ${{ steps.determine-target.outputs.esp_target }} --port /dev/ttyUSB0 write_flash -z 0x1000 firmware.bin
-          ```
-
-          Note: For ESP32-S3 devices, use address 0x0 instead of 0x1000:
-
-          ```
-          esptool.py --chip esp32s3 --port /dev/ttyUSB0 write_flash -z 0 firmware.bin
-          ```
-
-          Power cycle the device after flashing.
-          EOF
-
-      - name: Upload firmware artifacts
-        if: steps.filter-targets.outputs.build == 'true'
-        uses: actions/upload-artifact@v2
-        with:
-          name: firmware-${{ matrix.target }}
-          path: output/${{ matrix.target }}
-          retention-days: 7
-
-  build-rp2-targets:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [
-          "RP2",
-          "RP2W",
-          "T-DISPLAY-RP2040",
-          "WIO_TERMINAL"
-        ]
-
-    steps:
-      - name: Filter targets if specified
-        id: filter-targets
-        run: |
-          if [ -n "${{ github.event.inputs.targets }}" ]; then
-            IFS=',' read -ra SPECIFIED_TARGETS <<< "${{ github.event.inputs.targets }}"
-            for TARGET in "${SPECIFIED_TARGETS[@]}"; do
-              if [[ "${{ matrix.target }}" == "$TARGET" ]]; then
-                echo "build=true" >> $GITHUB_OUTPUT
-                break
-              fi
-            done
-          else
-            echo "build=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Checkout repository
-        if: steps.filter-targets.outputs.build == 'true'
-        uses: actions/checkout@v2
-        with:
-          path: st7789_mpy
-
-      - name: Install dependencies
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libffi-dev git pkg-config cmake gcc-arm-none-eabi libnewlib-arm-none-eabi
-
-      - name: Clone MicroPython repository
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          git clone --depth 1 https://github.com/micropython/micropython.git
-          cd micropython
-          git submodule update --init --recursive
-
-      - name: Build mpy-cross
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          cd micropython
-          make -C mpy-cross
-
-      - name: Prepare frozen modules
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          cd micropython/ports/rp2
-          mkdir -p modules
-          cp -r ../../../st7789_mpy/fonts/bitmap/vga1_*.py modules/
-          cp -r ../../../st7789_mpy/fonts/vector/*.py modules/
-          cp -r ../../../st7789_mpy/fonts/truetype/NotoSans_32.py modules/
-
-      - name: Build firmware for ${{ matrix.target }}
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          cd micropython/ports/rp2
-          make BOARD=${{ matrix.target }} USER_C_MODULES=../../../../st7789_mpy/st7789/micropython.cmake FROZEN_MANIFEST="" FROZEN_MPY_DIR=modules
-
-      - name: Create output directory
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          mkdir -p output/${{ matrix.target }}
-
-      - name: Copy firmware files
-        if: steps.filter-targets.outputs.build == 'true'
-        run: |
-          cp micropython/ports/rp2/build-${{ matrix.target }}/firmware.uf2 output/${{ matrix.target }}/
-
-          # Create flash instructions
-          cat > output/${{ matrix.target }}/flash_instructions.md << EOF
-          # Flashing firmware for ${{ matrix.target }}
-
-          ## Raspberry Pi RP2040
-
-          1. Press and hold the BOOTSEL button on the board
-          2. Connect the board to your computer via USB
-          3. Release the BOOTSEL button
-          4. The board should appear as a USB mass storage device
-          5. Copy the firmware.uf2 file to the device
-          6. The board will automatically reboot with the new firmware
-          EOF
-
-      - name: Upload firmware artifacts
-        if: steps.filter-targets.outputs.build == 'true'
-        uses: actions/upload-artifact@v2
-        with:
-          name: firmware-${{ matrix.target }}
-          path: output/${{ matrix.target }}
-          retention-days: 7
+    - name: Archive firmware
+      uses: actions/upload-artifact@v3
+      with:
+        name: firmware-${{ matrix.target }}
+        path: micropython/ports/esp32/build-${{ matrix.target }}/firmware.bin
